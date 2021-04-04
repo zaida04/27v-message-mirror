@@ -1,10 +1,19 @@
-import { Client, Message, MessageEmbed, TextChannel, WebhookClient, Util, Collection } from "discord.js";
+import { Client, Message, MessageEmbed, TextChannel, WebhookClient, Util, Collection, DMChannel, User, MessageMentions } from "discord.js";
 import { config } from "dotenv";
 import { join } from "path";
 
 config({ 
     path: join(__dirname, "..", ".env") 
 });
+
+interface botConfigType extends Record<string, any> {
+    TOKEN: string, 
+    DEST_WEBHOOK_TOKEN: string,
+    DEST_WEBHOOK_ID: string, 
+    LOG_CHANNEL: string,
+    GUILD_ID: string,
+    PREFIX: string
+}
 
 const botConfig: botConfigType = {
     TOKEN: process.env.DISCORD_TOKEN!,
@@ -25,7 +34,7 @@ const client = new Client({
     "messageCacheLifetime": 60,
     "messageCacheMaxSize": 1,
     "messageEditHistoryMaxSize": 1,
-    "messageSweepInterval": 3.6e+6,
+    "messageSweepInterval": 900000,
     "disableMentions": "everyone",
     "ws": {
         "intents": ["DIRECT_MESSAGES", "GUILDS", "GUILD_MESSAGES", "GUILD_WEBHOOKS"]
@@ -41,18 +50,34 @@ client.on("ready", () => {
 });
 
 client.on("message", async (msg: Message) => {
-    if(msg.channel.type !== "dm" || msg.author.bot || !msg.content.startsWith(botConfig.prefix)) return;
-
-	const [commandName, ...args] = msg.content.slice(botConfig.prefix.length).trim().split(/ +/);
+    if(msg.channel.type !== "dm" || msg.author.bot || !msg.content.startsWith(botConfig.PREFIX)) return;
+	const [commandName, ...args] = msg.content.slice(botConfig.PREFIX.length).trim().split(/ +/);
+    const guild = client.guilds.cache.get(botConfig.GUILD_ID);
 
     switch(commandName) {
         case "anon": case "anonymous": {
             if(context.currentlyExecutingCommand.has(msg.author.id)) return msg.channel.send("Please finish the command you are already doing first!");
-            if(!args.length) return msg.channel.send(`Please add a message after \`${botConfig.prefix}anonymous\``)
-            
-            const content = args.join(" ");
+            if(!args.length) return msg.channel.send(`Please add a message after \`${botConfig.PREFIX}${commandName}\``)
+
+            let channel_dest: TextChannel | undefined;
+            let attempts = 3;
+            while(!channel_dest) {
+                await msg.channel.send("Please provide the channel name or id of the channel you wish to anonymously post to.")
+                const r = await promptForChannel(msg.channel, msg.author);
+                if(!r) continue;
+                const c = guild?.channels.cache.get(r) ?? guild?.channels.cache.filter(x => x.type === "text").find((x) => Boolean(x.name.toLowerCase().includes(r) ?? false));
+                if(!c) {
+                    if(attempts <= 0) return msg.channel.send("You were unable to provide a valid channel. Please try again.");
+                    msg.channel.send("That is not a valid channel that I have access to. Please try again");
+                    attempts--;
+                    continue;
+                }
+                channel_dest = c as TextChannel;
+            }
+
             const log = getLogChannel();
-            if(!log || !dest) return;
+            if(!log || !channel_dest) return msg.channel.send("Cannot find dest or log channels. Report this error to admins.");
+            const content = args.join(" ");
 
             context.currentlyExecutingCommand.add(msg.author.id);
             if(!context.alreadyAgreed.has(msg.author.id) && !await promptYesOrNo(`**Please do not abuse or use this system for inappropriate or dangerous reasons. Your username is logged only for moderation purposes and is not revealed to anyone besides the staff. Please indicate whether you agree to these terms by saying either YES or NO**.`, { message: msg })) {
@@ -75,7 +100,7 @@ client.on("message", async (msg: Message) => {
             ]));
 
             try {
-                await dest.send(`**New Anonymous post:** \`${Util.escapeMarkdown(content)}\``, { "avatarURL": logo, "username": "27 Ventures Anonymous Posts" });    
+                await channel_dest.send(`**New Anonymous post:** \`${Util.escapeMarkdown(content)}\``);    
             } catch(e) {
                 console.log(e);
                 return msg.reply("Sorry, but an error occurred!");
@@ -87,17 +112,13 @@ client.on("message", async (msg: Message) => {
     }
 });
 
-function getLogChannel() {
-    return client.guilds.cache.get(botConfig.GUILD_ID)?.channels.cache.get(botConfig.LOG_CHANNEL) as TextChannel | undefined;
+async function promptForChannel(channel: DMChannel, author: User) {
+    const response = await channel.awaitMessages((m: Message) => m.author.id === author.id, { max: 1, time: 60000, errors: ['time']}).then(x => x.first());
+    return response?.content;
 }
 
-interface botConfigType extends Record<string, any> {
-    TOKEN: string, 
-    DEST_WEBHOOK_TOKEN: string,
-    DEST_WEBHOOK_ID: string, 
-    LOG_CHANNEL: string,
-    GUILD_ID: string,
-    PREFIX: string
+function getLogChannel() {
+    return client.guilds.cache.get(botConfig.GUILD_ID)?.channels.cache.get(botConfig.LOG_CHANNEL) as TextChannel | undefined;
 }
 
 async function promptYesOrNo (
